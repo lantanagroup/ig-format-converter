@@ -1,10 +1,14 @@
 package com.lantanagroup.fhir;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
 import java.nio.file.Path;
 import java.nio.file.Files;
 
@@ -29,9 +33,10 @@ public class IgFormatConverter {
 	private static final String OUT_FOLDER = "outFolder";
 	private static final String FORMAT = "format";
 	
-	private File inputFolder;
-	private File outputFolder;
+	private final File inputFolder;
+	private final File outputFolder;
 	private final String outputFormat;
+	private Set<String> invalidTopLevelFolders;
 	private final FhirContext ctx = FhirContext.forR4();
 	private XmlParser xmlParser = (XmlParser) ctx.newXmlParser();
 	private JsonParser jsonParser = (JsonParser) ctx.newJsonParser();
@@ -64,6 +69,11 @@ public class IgFormatConverter {
 		this.inputFolder = inputFolder;
 		this.outputFolder = outputFolder;
 		this.outputFormat = outputFormat;
+		System.out.println("Output format: " + outputFormat);
+		this.invalidTopLevelFolders = new HashSet<String>();
+		invalidTopLevelFolders.add("output");
+		invalidTopLevelFolders.add("temp");
+		invalidTopLevelFolders.add("input-cache");
 		processFolder(inputFolder, outputFolder);
 	}
 	
@@ -71,9 +81,10 @@ public class IgFormatConverter {
 		for (File f : inputFolder.listFiles()) processFile(f,outputFolder);
 	}
 	
+	
 	private boolean validInputFolder(File folder) {
 		File parent = folder.getParentFile();
-		if (parent.equals(inputFolder) && folder.getName().equals("input") == false) {
+		if (parent.equals(inputFolder) && invalidTopLevelFolders.contains(folder.getName())) {
 			System.out.println("Ignoring folder " + folder.getName());
 			return false;
 		}
@@ -82,42 +93,69 @@ public class IgFormatConverter {
 
 	private void processFile(File f, File outputFolder)  {
 		System.out.println("Processing " + f.getName());
-		if (f.isDirectory() ) {
-			if (validInputFolder(f)) {
-				File subdirectory = new File(outputFolder,f.getName());
-				subdirectory.mkdirs();
-				processFolder(f,subdirectory);
-			}
-		} else {
-			try {
-				String oldExtension = com.google.common.io.Files.getFileExtension(f.getName()).toLowerCase();
-				String newExtension = null;
-				IParser inParser = null;
-				IParser outParser = null;
-				if (oldExtension.equals("json")) {
-					newExtension = "xml";
-					inParser = this.jsonParser;
-					outParser = this.xmlParser;
-				} else if (oldExtension.equals("xml")) {
-					newExtension = "json";
-					inParser = this.xmlParser;
-					outParser = this.jsonParser;
+
+		try {
+			if (f.isDirectory() ) {
+				if (validInputFolder(f)) {
+					File subdirectory = new File(outputFolder,f.getName());
+					subdirectory.mkdirs();
+					processFolder(f,subdirectory);
 				}
-				if (newExtension == null) Files.copy(f.toPath(), new File(outputFolder,f.getName()).toPath());
-				else convert(f,outputFolder,inParser,outParser,newExtension);
-				
-			} catch (Exception e) {
-				System.err.println(e.toString());
+			} else if (f.getName().equals("ig.ini")) {
+				updateIgIni(f,outputFolder);
+			} else {
+					String oldExtension = com.google.common.io.Files.getFileExtension(f.getName()).toLowerCase();
+					String newExtension = null;
+					IParser inParser = null;
+					IParser outParser = null;
+					if (oldExtension.equals("json")) {
+						newExtension = "xml";
+						inParser = this.jsonParser;
+						outParser = this.xmlParser;
+					} else if (oldExtension.equals("xml")) {
+						newExtension = "json";
+						inParser = this.xmlParser;
+						outParser = this.jsonParser;
+					}
+					if (newExtension == null) Files.copy(f.toPath(), new File(outputFolder,f.getName()).toPath());
+					else convert(f,outputFolder,inParser,outParser,newExtension);
+					
+	
 			}
+		} catch (Exception e) {
+			System.err.println(e.toString());
 		}
 	}
 
-	private void convert(File f, File outputFolder, IParser inParser, IParser outParser, String newExtension) throws ConfigurationException, DataFormatException, IOException {
-		IBaseResource res = inParser.parseResource(new FileReader(f));
-		String baseName = com.google.common.io.Files.getNameWithoutExtension(f.getName());
-		String newName = baseName + "." + newExtension;
-		File newFile = new File(outputFolder, newName);
-		outParser.encodeToWriter(res, new FileWriter(newFile));
+	private void updateIgIni(File f, File outputFolder) throws IOException {
+		File newIni = new File(outputFolder,f.getName());
+		BufferedReader in = new BufferedReader(new FileReader(f));
+		PrintWriter out = new PrintWriter(new FileWriter(newIni));
+		String line;
+		while ((line = in.readLine()) != null) {
+			if (line.startsWith("ig")) {
+				String igFile = line.substring(line.indexOf('='));
+				while (igFile.startsWith(" ")) igFile = igFile.substring(1);
+				String baseName = com.google.common.io.Files.getNameWithoutExtension(igFile);
+				out.println("ig = input/" + baseName + "." + this.outputFormat);
+			} else {
+				out.println(line);
+			}
+		}
+		in.close();
+		out.close();
+	}
+
+	private void convert(File f, File outputFolder, IParser inParser, IParser outParser, String newExtension) throws IOException {
+		try {
+			IBaseResource res = inParser.parseResource(new FileReader(f));
+			String baseName = com.google.common.io.Files.getNameWithoutExtension(f.getName());
+			String newName = baseName + "." + newExtension;
+			File newFile = new File(outputFolder, newName);
+			outParser.encodeToWriter(res, new FileWriter(newFile));
+		} catch (Exception e) {
+			Files.copy(f.toPath(), new File(outputFolder,f.getName()).toPath());
+		}
 	}
 
 
